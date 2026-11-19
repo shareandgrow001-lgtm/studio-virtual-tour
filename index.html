@@ -1,4 +1,4 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Studio • Interactive View v1.7</title><style>*{box-sizing:border-box}html,body{margin:0;height:100%;background:#090b10;color:#f3f5f8;font:14px system-ui,sans-serif}main{height:100%;display:grid;grid-template-rows:auto 1fr auto}header,footer{padding:14px 22px;display:flex;align-items:center;justify-content:space-between;gap:12px}header{border-bottom:1px solid #ffffff1b}footer{border-top:1px solid #ffffff1b;color:#aab2c1;font-size:12px}.brand{font-weight:650;letter-spacing:.13em}.viewer{position:relative;min-height:0;overflow:hidden;cursor:crosshair}canvas{width:100%;height:100%;display:block}.overlay{position:absolute;left:18px;top:18px;background:#090b10a8;backdrop-filter:blur(10px);padding:10px 13px;border:1px solid #ffffff26;border-radius:10px;pointer-events:none}.status{font-size:12px;color:#aab2c1;margin-top:5px}.panel{display:flex;gap:12px;align-items:center;flex-wrap:wrap}button,input{font:inherit}input[type=range]{accent-color:#8eaeff;width:110px}output{min-width:38px;font-variant-numeric:tabular-nums;color:#cbd6eb}input[type=number]{width:64px;background:#171e2a;border:1px solid #ffffff38;border-radius:6px;color:#fff;padding:7px}input[type=number]:focus{outline:2px solid #6d94d7}button{background:#252c3b;color:white;border:1px solid #ffffff26;border-radius:7px;padding:8px 12px;cursor:pointer}button:hover{background:#35415a}input[type=file]{max-width:260px}label{display:flex;align-items:center;gap:7px}.hint{opacity:.7}@media(max-width:680px){header,footer{align-items:flex-start;flex-direction:column}.overlay{top:10px;left:10px}}</style></head><body><main><header><div class="brand">STUDIO / INTERACTIVE VIEW</div><div class="panel"><label>Load renders <input id="files" type="file" accept="image/*" multiple></label><label>Columns <input id="cols" type="number" min="2" max="200" value="9" step="1"></label><label>Rows <input id="rows" type="number" min="2" max="200" value="5" step="1"></label><label title="Higher values make camera tracking more responsive">Tracking <input id="tracking" type="range" min="1" max="10" value="5" step="1"><output id="trackingValue">5</output></label><button id="reset">Center view</button></div></header><section class="viewer" id="viewer"><canvas id="canvas"></canvas><div class="overlay"><div id="counter">Waiting for images</div><div class="status" id="status">Set columns and rows, then select your rendered images</div></div></section><footer><span><span id="gridLabel">Move cursor to explore · 9 columns × 5 rows · 45 frames</span></span><span class="hint">GPU blending · eased cursor tracking · nearest cached fallback</span></footer></main><script type="module">
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Studio • Interactive View v1.9 Forward Smooth Preview</title><style>*{box-sizing:border-box}html,body{margin:0;height:100%;background:#090b10;color:#f3f5f8;font:14px system-ui,sans-serif}main{height:100%;display:grid;grid-template-rows:auto 1fr auto}header,footer{padding:14px 22px;display:flex;align-items:center;justify-content:space-between;gap:12px}header{border-bottom:1px solid #ffffff1b}footer{border-top:1px solid #ffffff1b;color:#aab2c1;font-size:12px}.brand{font-weight:650;letter-spacing:.13em}.viewer{position:relative;min-height:0;overflow:hidden;cursor:crosshair}canvas{width:100%;height:100%;display:block}.overlay{position:absolute;left:18px;top:18px;background:#090b10a8;backdrop-filter:blur(10px);padding:10px 13px;border:1px solid #ffffff26;border-radius:10px;pointer-events:none}.status{font-size:12px;color:#aab2c1;margin-top:5px}.panel{display:flex;gap:12px;align-items:center;flex-wrap:wrap}button,input{font:inherit}input[type=range]{accent-color:#8eaeff;width:110px}output{min-width:38px;font-variant-numeric:tabular-nums;color:#cbd6eb}input[type=number]{width:64px;background:#171e2a;border:1px solid #ffffff38;border-radius:6px;color:#fff;padding:7px}input[type=number]:focus{outline:2px solid #6d94d7}button{background:#252c3b;color:white;border:1px solid #ffffff26;border-radius:7px;padding:8px 12px;cursor:pointer}button:hover{background:#35415a}input[type=file]{max-width:260px}label{display:flex;align-items:center;gap:7px}.hint{opacity:.7}@media(max-width:680px){header,footer{align-items:flex-start;flex-direction:column}.overlay{top:10px;left:10px}}</style></head><body><main><header><div class="brand">STUDIO / INTERACTIVE VIEW</div><div class="panel"><label>Load renders <input id="files" type="file" accept="image/*" multiple></label><label>Columns <input id="cols" type="number" min="2" max="200" value="9" step="1"></label><label>Rows <input id="rows" type="number" min="2" max="200" value="5" step="1"></label><label title="Higher values make camera tracking more responsive">Tracking <input id="tracking" type="range" min="1" max="10" value="5" step="1"><output id="trackingValue">5</output></label><button id="reset">Center view</button></div></header><section class="viewer" id="viewer"><canvas id="canvas"></canvas><div class="overlay"><div id="counter">Waiting for images</div><div class="status" id="status">Set columns and rows, then select your rendered images</div></div></section><footer><span><span id="gridLabel">Move cursor to explore · 9 columns × 5 rows · 45 frames</span></span><span class="hint">GPU blending in motion · whole-frame resting · eased tracking</span></footer></main><script type="module">
 let COLS=9,ROWS=5,COUNT=COLS*ROWS;
 const canvas=document.querySelector('#canvas'),viewer=document.querySelector('#viewer'),status=document.querySelector('#status'),counter=document.querySelector('#counter');
 const gl=canvas.getContext('webgl2',{alpha:false,antialias:false,premultipliedAlpha:false});
@@ -17,6 +17,17 @@ const tracking=document.querySelector('#tracking'),trackingValue=document.queryS
 tracking.addEventListener('input',()=>trackingValue.textContent=tracking.value);
 // Keep a small movement velocity for predictive prefetch, but cap actual movement per frame.
 let vx=0,vy=0;
+let lastInputTime=performance.now(), lastDirX=1,lastDirY=1,settling=false;
+let restX=.5,restY=.5;
+const REST_DELAY_MS=110;
+let motionVX=0,motionVY=0;
+function upcomingGridPosition(value,steps,direction){
+  const coordinate=value*(steps-1);
+  const rounded=Math.round(coordinate);
+  if(Math.abs(coordinate-rounded)<1e-5)return rounded/(steps-1);
+  const snapped=direction<0?Math.floor(coordinate):Math.ceil(coordinate);
+  return Math.max(0,Math.min(1,snapped/(steps-1)));
+}
 const MAX_TEXTURES=24, MAX_PENDING=12;
 const index=(col,row)=>row*COLS+(row%2===0?col:COLS-1-col); // Blender serpentine: top row L->R, next row R->L
 function textureFromBitmap(bitmap){const t=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,t);gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,true);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,bitmap);return t}
@@ -60,17 +71,27 @@ function resize(){const dpr=Math.min(devicePixelRatio||1,2);const w=Math.round(c
 function draw(now){
   requestAnimationFrame(draw);resize();
   const dt=Math.min(0.05,Math.max(0.001,prevTime?(now-prevTime)/1000:1/60));prevTime=now;
-  // Exponential easing with an additional speed limit. A large cursor jump
-  // takes multiple frames to reach its target instead of skipping the entire grid.
+  if(!settling && now-lastInputTime>REST_DELAY_MS){
+    restX=upcomingGridPosition(tx,COLS,lastDirX);
+    restY=upcomingGridPosition(ty,ROWS,lastDirY);
+    settling=true;
+  }
+  const destinationX=settling?restX:tx,destinationY=settling?restY:ty;
   const setting=Number(tracking.value);
-  const response=3+setting*2.2; // 5.2..25 inverse seconds
-  const maxSpeed=0.14+setting*0.075; // 0.215..0.89 normalized canvas units/sec
-  const alpha=1-Math.exp(-response*dt);
-  let dx=(tx-x)*alpha,dy=(ty-y)*alpha;
-  const distance=Math.hypot(dx,dy),limit=maxSpeed*dt;
-  if(distance>limit){dx*=limit/distance;dy*=limit/distance}
+  const maxSpeed=0.14+setting*0.075;
+  const omega=3.2+setting*1.2;
+  const ax=omega*omega*(destinationX-x)-2*omega*motionVX;
+  const ay=omega*omega*(destinationY-y)-2*omega*motionVY;
+  motionVX+=ax*dt;motionVY+=ay*dt;
+  const speed=Math.hypot(motionVX,motionVY);
+  if(speed>maxSpeed){motionVX*=maxSpeed/speed;motionVY*=maxSpeed/speed;}
+  const dx=motionVX*dt,dy=motionVY*dt;
   vx=dx;vy=dy;
   x=Math.max(0,Math.min(1,x+dx));y=Math.max(0,Math.min(1,y+dy));
+  if(settling && Math.hypot(restX-x,restY-y)<.00025 && Math.hypot(motionVX,motionVY)<.006){
+    x=restX;y=restY;motionVX=0;motionVY=0;
+  }
+  const resting=settling && x===restX && y===restY;
   const requested=required(x,y);
   if(files.length)updateCache(requested.ids);
   // Resolve each corner to its closest available GPU texture. The requested
@@ -81,7 +102,7 @@ function draw(now){
   if(files.length){
     const skipped=requested.ids.filter((id,k)=>id!==chosen[k]).length;
     counter.textContent=`View ${requested.c+1}–${requested.c+2} / ${COLS} · Row ${requested.r+1}–${requested.r+2} / ${ROWS}`;
-    status.textContent=`${loaded.size} GPU textures cached · ${pending.size} loading · ${skipped} substituted · tracking ${tracking.value}/10`;
+    status.textContent=`${loaded.size} GPU textures cached · ${pending.size} loading · ${skipped} substituted · ${resting?'whole frame':'moving'} · tracking ${tracking.value}/10`;
   }
   gl.uniform2f(mixLoc,requested.fx,requested.fy);
   gl.uniform2f(resolutionLoc,canvas.width,canvas.height);
@@ -94,9 +115,18 @@ function draw(now){
 }
 
 requestAnimationFrame(draw);
-viewer.addEventListener('pointermove',e=>{const rect=viewer.getBoundingClientRect();tx=Math.max(0,Math.min(1,(e.clientX-rect.left)/rect.width));ty=Math.max(0,Math.min(1,(e.clientY-rect.top)/rect.height))});document.querySelector('#reset').onclick=()=>{tx=.5;ty=.5};
+viewer.addEventListener('pointermove',e=>{
+  const rect=viewer.getBoundingClientRect();
+  const nextX=Math.max(0,Math.min(1,(e.clientX-rect.left)/rect.width));
+  const nextY=Math.max(0,Math.min(1,(e.clientY-rect.top)/rect.height));
+  if(Math.hypot(nextX-tx,nextY-ty)<.0001)return;
+  if(Math.abs(nextX-tx)>.0001)lastDirX=Math.sign(nextX-tx);
+  if(Math.abs(nextY-ty)>.0001)lastDirY=Math.sign(nextY-ty);
+  tx=nextX;ty=nextY;lastInputTime=performance.now();settling=false;
+});
+document.querySelector('#reset').onclick=()=>{tx=.5;ty=.5;lastInputTime=performance.now();settling=false};
 const colsInput=document.querySelector('#cols'),rowsInput=document.querySelector('#rows'),fileInput=document.querySelector('#files'),gridLabel=document.querySelector('#gridLabel');
-function resetTextures(){generation++;for(const t of loaded.values())gl.deleteTexture(t);loaded.clear();pending.clear();lastShownIds=[];files=[];tx=x=.5;ty=y=.5;}
+function resetTextures(){generation++;for(const t of loaded.values())gl.deleteTexture(t);loaded.clear();pending.clear();lastShownIds=[];files=[];tx=x=.5;ty=y=.5;settling=false;lastInputTime=performance.now();motionVX=0;motionVY=0;}
 function applyGrid(){const cols=Number(colsInput.value),rows=Number(rowsInput.value);if(!Number.isInteger(cols)||!Number.isInteger(rows)||cols<2||rows<2||cols>200||rows>200){status.textContent='Columns and rows must be whole numbers between 2 and 200.';return false;}if(cols===COLS&&rows===ROWS)return true;COLS=cols;ROWS=rows;COUNT=COLS*ROWS;resetTextures();fileInput.value='';gridLabel.textContent=`Move cursor to explore · ${COLS} columns × ${ROWS} rows · ${COUNT} frames`;counter.textContent=`Grid: ${COLS} × ${ROWS}`;status.textContent=`Grid updated. Select exactly ${COUNT} images.`;return true;}
 colsInput.addEventListener('change',applyGrid);rowsInput.addEventListener('change',applyGrid);
 fileInput.addEventListener('change',e=>{if(!applyGrid())return;const selected=[...e.target.files].filter(f=>f.type.startsWith('image/')).sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true}));if(selected.length!==COUNT){status.textContent=`Expected ${COUNT} images; selected ${selected.length}. Please select exactly ${COUNT}.`;return}resetTextures();files=selected;tx=x=.5;ty=y=.5;status.textContent='Loading center views…';required(x,y).ids.forEach(ensure)});
