@@ -30,26 +30,80 @@ function switchScene(id){
  resetTextures();const fs=nodeFiles.get(id);if(fs?.length===n.cols*n.rows){files=fs;required(x,y).ids.forEach(ensure);status.textContent=n.name+' · '+fs.length+' frames'}else status.textContent='Upload '+(n.cols*n.rows)+' frames for '+n.name+' in Developer panel';
  document.querySelector('#sceneTitle').textContent=n.name;
 }
+async function waitForSceneReady(timeoutMs=15000){
+ const started=performance.now();
+ while(performance.now()-started<timeoutMs){
+  if(loaded.size>0){
+   await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+   return true;
+  }
+  await new Promise(resolve=>requestAnimationFrame(resolve));
+ }
+ return false;
+}
 async function playEdge(e){
- if(playing)return;playing=true;
- // Align the source view to the exact center before showing the first transition render.
- // Keep the WebGL canvas visible during the alignment so it can settle naturally.
- manualFrame=null;tx=.5;ty=.5;restX=.5;restY=.5;settling=true;
- lastInputTime=performance.now();motionVX=0;motionVY=0;
- const centerReady=()=>Math.hypot(x-.5,y-.5)<.001;
- const start=performance.now();
- while(!centerReady()&&performance.now()-start<2500)await new Promise(resolve=>requestAnimationFrame(resolve));
- x=.5;y=.5;tx=.5;ty=.5;restX=.5;restY=.5;motionVX=motionVY=0;vx=vy=0;
- updateGridSelection();
- // Render the centered base frame before the transition overlay appears.
- await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
- const cover=document.querySelector('#transition'),im=document.querySelector('#transitionImg'),seq=edgeFiles.get(e.id)||[];
- document.querySelector('#transitionText').textContent=(e.name||'Transition')+' → '+node(e.to).name;cover.hidden=false;
+ if(playing)return;
+ playing=true;
+ const cover=document.querySelector('#transition'),im=document.querySelector('#transitionImg');
+ const seq=edgeFiles.get(e.id)||[];
+ const label=document.querySelector('#transitionText');
+ let urls=[],frames=[];
  try{
-  for(const f of seq){const url=URL.createObjectURL(f);await new Promise(resolve=>{let done=false;const finish=()=>{if(!done){done=true;resolve()}};im.onload=finish;im.onerror=finish;im.src=url;setTimeout(finish,1500)});await new Promise(resolve=>setTimeout(resolve,Math.max(20,1000/(e.fps||24))));URL.revokeObjectURL(url)}
-  if(!seq.length)await new Promise(resolve=>setTimeout(resolve,250));
+  // Keep the current WebGL scene visible while centering.
+  manualFrame=null;tx=.5;ty=.5;restX=.5;restY=.5;settling=true;
+  lastInputTime=performance.now();motionVX=motionVY=0;
+  const centerStart=performance.now();
+  while(Math.hypot(x-.5,y-.5)>.001&&performance.now()-centerStart<2500)
+   await new Promise(resolve=>requestAnimationFrame(resolve));
+  x=tx=restX=.5;y=ty=restY=.5;motionVX=motionVY=0;vx=vy=0;
+  updateGridSelection();
+  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+  if(seq.length){
+   label.textContent=(e.name||'Transition')+' → '+(node(e.to)?.name||'Environment');
+   // Decode every transition image BEFORE the overlay becomes visible.
+   urls=seq.map(file=>URL.createObjectURL(file));
+   frames=await Promise.all(urls.map(url=>new Promise((resolve,reject)=>{
+    const image=new Image();
+    image.onload=()=>resolve(image);
+    image.onerror=()=>reject(new Error('Could not load a transition frame'));
+    image.src=url;
+   })));
+   if(frames.some(image=>!image.naturalWidth))throw Error('Transition image missing');
+   // First frame is already decoded; never expose the black overlay before it.
+   im.src=urls[0];
+   cover.hidden=false;
+   const duration=1000/Math.max(1,Math.min(120,e.fps||24));
+   const start=performance.now();
+   let shown=-1;
+   while(true){
+    const elapsed=performance.now()-start;
+    const next=Math.min(frames.length-1,Math.floor(elapsed/duration));
+    if(next!==shown){im.src=urls[next];shown=next}
+    if(next===frames.length-1)break;
+    await new Promise(resolve=>requestAnimationFrame(resolve));
+   }
+   // Hold the final transition image for its complete frame duration.
+   await new Promise(resolve=>setTimeout(resolve,duration));
+  }
+  // Keep the final transition image on screen while destination GPU textures load.
+  // If no animation was supplied, the source remains visible until the destination is ready.
+  if(!seq.length){
+   // Preserve a snapshot of the source canvas instead of exposing a black overlay.
+   try{im.src=canvas.toDataURL('image/png');cover.hidden=false}
+   catch(err){cover.hidden=false;cover.style.background='transparent'}
+  }
   switchScene(e.to);
- }finally{im.removeAttribute('src');cover.hidden=true;playing=false}
+  const ready=await waitForSceneReady();
+  if(!ready)status.textContent='Destination scene is not ready: upload its frames in Developer panel';
+ }catch(err){
+  status.textContent='Transition error: '+err.message;
+ }finally{
+  // Draw destination before removing the final transition frame.
+  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+  cover.hidden=true;cover.style.background='';im.removeAttribute('src');
+  for(const url of urls)URL.revokeObjectURL(url);
+  playing=false;
+ }
 }
 function renderDev(){
  nodesEl.replaceChildren();linesEl.replaceChildren();
