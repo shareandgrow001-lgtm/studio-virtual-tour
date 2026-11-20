@@ -32,6 +32,17 @@ function switchScene(id){
 }
 async function playEdge(e){
  if(playing)return;playing=true;
+ // Align the source view to the exact center before showing the first transition render.
+ // Keep the WebGL canvas visible during the alignment so it can settle naturally.
+ manualFrame=null;tx=.5;ty=.5;restX=.5;restY=.5;settling=true;
+ lastInputTime=performance.now();motionVX=0;motionVY=0;
+ const centerReady=()=>Math.hypot(x-.5,y-.5)<.001;
+ const start=performance.now();
+ while(!centerReady()&&performance.now()-start<2500)await new Promise(resolve=>requestAnimationFrame(resolve));
+ x=.5;y=.5;tx=.5;ty=.5;restX=.5;restY=.5;motionVX=motionVY=0;vx=vy=0;
+ updateGridSelection();
+ // Render the centered base frame before the transition overlay appears.
+ await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
  const cover=document.querySelector('#transition'),im=document.querySelector('#transitionImg'),seq=edgeFiles.get(e.id)||[];
  document.querySelector('#transitionText').textContent=(e.name||'Transition')+' → '+node(e.to).name;cover.hidden=false;
  try{
@@ -105,11 +116,15 @@ function setFrameGridOpen(open){
 }
 frameGridToggle.onclick=()=>setFrameGridOpen(!frameGridOpen);
 viewer.addEventListener('pointerdown',e=>{
- if(!frameGridOpen||e.target.closest('.mask-toolbar'))return;
+ if(playing||e.button!==0||e.target.closest('button,input,label,select,.overlay'))return;
  const p=pointerPosition(e);
  const col=Math.max(0,Math.min(COLS-1,Math.floor(p.x*COLS)));
  const row=Math.max(0,Math.min(ROWS-1,Math.floor(p.y*ROWS)));
- const frame=index(col,row);const link=graph.edges.find(e=>e.from===activeNode&&e.cells.includes(frame+1));if(link)playEdge(link);else selectGridFrame(col,row);e.preventDefault();
+ const frame=index(col,row);
+ const link=graph.edges.find(edge=>edge.from===activeNode&&edge.cells.includes(frame+1));
+ if(link){e.preventDefault();playEdge(link);return}
+ // No connection assigned: normal exploration continues. Grid mode is only a visual aid.
+ if(frameGridOpen){e.preventDefault();selectGridFrame(col,row)}
 });
 let lastShownIds=[]; // Cache priority only; never freeze a complete quartet
 let prevTime=0;
