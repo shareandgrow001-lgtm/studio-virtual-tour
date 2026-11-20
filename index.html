@@ -15,6 +15,21 @@ function pointerPosition(e){const r=viewer.getBoundingClientRect();return{x:Math
 let manualFrame=null,frameGridOpen=false;
 const dev=document.querySelector('#dev'),nodesEl=document.querySelector('#nodes'),linesEl=document.querySelector('#lines'),side=document.querySelector('#sidebar'),devStatus=document.querySelector('#devStatus');
 let graph={nodes:[{id:'n1',name:'Main',cols:9,rows:5,x:90,y:130}],edges:[],start:'n1'};
+let transitionCache=new Map();
+function releaseTransition(id){const entry=transitionCache.get(id);if(entry){for(const url of entry.urls)URL.revokeObjectURL(url);transitionCache.delete(id)}}
+function preloadTransition(id){
+ const files=edgeFiles.get(id)||[];
+ const old=transitionCache.get(id);
+ if(old&&old.files===files)return old;
+ releaseTransition(id);
+ const urls=files.map(file=>URL.createObjectURL(file));
+ const frames=urls.map(url=>new Promise((resolve,reject)=>{
+  const image=new Image();image.onload=()=>resolve(image);image.onerror=()=>reject(Error('Transition frame failed to load'));image.src=url;
+ }));
+ const entry={files,urls,frames,ready:Promise.allSettled(frames)};
+ transitionCache.set(id,entry);
+ return entry;
+}
 let nodeFiles=new Map(),edgeFiles=new Map(),activeNode='n1',selected={type:'node',id:'n1'},playing=false,uid=1;
 const node=id=>graph.nodes.find(n=>n.id===id),edge=id=>graph.edges.find(e=>e.id===id);
 const images=fs=>[...fs].filter(f=>f.type.startsWith('image/')).sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true}));
@@ -45,64 +60,48 @@ async function playEdge(e){
  if(playing)return;
  playing=true;
  const cover=document.querySelector('#transition'),im=document.querySelector('#transitionImg');
- const seq=edgeFiles.get(e.id)||[];
- const label=document.querySelector('#transitionText');
- let urls=[],frames=[];
+ const label=document.querySelector('#transitionText'),seq=edgeFiles.get(e.id)||[];
+ const cache=preloadTransition(e.id);
  try{
-  // Keep the current WebGL scene visible while centering.
+  // Brief, predictable camera centering. Preloading already started when images were selected.
   manualFrame=null;tx=.5;ty=.5;restX=.5;restY=.5;settling=true;
-  lastInputTime=performance.now();motionVX=motionVY=0;
+  lastInputTime=performance.now();motionVX=0;motionVY=0;
   const centerStart=performance.now();
-  while(Math.hypot(x-.5,y-.5)>.001&&performance.now()-centerStart<2500)
+  while(Math.hypot(x-.5,y-.5)>.012&&performance.now()-centerStart<400)
    await new Promise(resolve=>requestAnimationFrame(resolve));
   x=tx=restX=.5;y=ty=restY=.5;motionVX=motionVY=0;vx=vy=0;
   updateGridSelection();
-  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+  await new Promise(resolve=>requestAnimationFrame(resolve));
   if(seq.length){
+   // Only the first frame is required to begin. Other frames load concurrently.
+   await cache.frames[0];
    label.textContent=(e.name||'Transition')+' → '+(node(e.to)?.name||'Environment');
-   // Decode every transition image BEFORE the overlay becomes visible.
-   urls=seq.map(file=>URL.createObjectURL(file));
-   frames=await Promise.all(urls.map(url=>new Promise((resolve,reject)=>{
-    const image=new Image();
-    image.onload=()=>resolve(image);
-    image.onerror=()=>reject(new Error('Could not load a transition frame'));
-    image.src=url;
-   })));
-   if(frames.some(image=>!image.naturalWidth))throw Error('Transition image missing');
-   // First frame is already decoded; never expose the black overlay before it.
-   im.src=urls[0];
-   cover.hidden=false;
+   im.src=cache.urls[0];cover.hidden=false;
    const duration=1000/Math.max(1,Math.min(120,e.fps||24));
-   const start=performance.now();
-   let shown=-1;
-   while(true){
-    const elapsed=performance.now()-start;
-    const next=Math.min(frames.length-1,Math.floor(elapsed/duration));
-    if(next!==shown){im.src=urls[next];shown=next}
-    if(next===frames.length-1)break;
+   const started=performance.now();
+   let shown=0;
+   while(shown<seq.length-1){
     await new Promise(resolve=>requestAnimationFrame(resolve));
+    const next=Math.min(seq.length-1,Math.floor((performance.now()-started)/duration));
+    if(next<=shown)continue;
+    // Never switch to an undecoded image: keep the last good frame visible.
+    const result=await Promise.allSettled([cache.frames[next]]);
+    if(result[0].status!=='fulfilled')throw result[0].reason;
+    im.src=cache.urls[next];shown=next;
    }
-   // Hold the final transition image for its complete frame duration.
    await new Promise(resolve=>setTimeout(resolve,duration));
-  }
-  // Keep the final transition image on screen while destination GPU textures load.
-  // If no animation was supplied, the source remains visible until the destination is ready.
-  if(!seq.length){
-   // Preserve a snapshot of the source canvas instead of exposing a black overlay.
-   try{im.src=canvas.toDataURL('image/png');cover.hidden=false}
-   catch(err){cover.hidden=false;cover.style.background='transparent'}
+  }else{
+   // No animation uploaded: keep source image on screen during destination loading.
+   try{im.src=canvas.toDataURL('image/png')}catch(err){cover.style.background='transparent'}
+   cover.hidden=false;
   }
   switchScene(e.to);
   const ready=await waitForSceneReady();
-  if(!ready)status.textContent='Destination scene is not ready: upload its frames in Developer panel';
- }catch(err){
-  status.textContent='Transition error: '+err.message;
- }finally{
-  // Draw destination before removing the final transition frame.
+  if(!ready)status.textContent='Destination scene not ready: upload its frames in Developer panel';
+ }catch(err){status.textContent='Transition error: '+err.message}
+ finally{
   await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
-  cover.hidden=true;cover.style.background='';im.removeAttribute('src');
-  for(const url of urls)URL.revokeObjectURL(url);
-  playing=false;
+  cover.hidden=true;cover.style.background='';im.removeAttribute('src');playing=false;
  }
 }
 function renderDev(){
@@ -129,8 +128,8 @@ function renderSide(){
  for(const prop of ['from','to']){const wrap=document.createElement('label');wrap.textContent=prop==='from'?'From environment':'To environment';const sel=document.createElement('select');for(const n of graph.nodes){const o=document.createElement('option');o.value=n.id;o.textContent=n.name;sel.append(o)}sel.value=e[prop];sel.onchange=()=>{e[prop]=sel.value;if(prop==='from')e.cells=[];saveGraph();renderDev()};wrap.append(sel);side.append(wrap)}
  field('Trigger grid numbers (e.g. 1,2,3,4)',e.cells.join(','),v=>{const cells=parseCells(v,node(e.from).cols*node(e.from).rows);if(graph.edges.some(other=>other.id!==e.id&&other.from===e.from&&other.cells.some(c=>cells.includes(c))))throw Error('Overlapping trigger on another connection');e.cells=cells});
  field('Transition FPS',e.fps||24,v=>{if(!Number.isFinite(+v)||+v<1||+v>120)throw Error('FPS must be 1–120');e.fps=+v},'number');
- fileField('Choose transition frames (filename order)',fs=>{edgeFiles.set(e.id,fs);notify(fs.length+' transition frames loaded');renderDev()});
- action('Delete connection',()=>{graph.edges=graph.edges.filter(x=>x.id!==e.id);edgeFiles.delete(e.id);selected={type:'node',id:e.from};saveGraph();renderDev()});
+ fileField('Choose transition frames (filename order)',fs=>{edgeFiles.set(e.id,fs);preloadTransition(e.id);notify(fs.length+' transition frames preloading in background');renderDev()});
+ action('Delete connection',()=>{graph.edges=graph.edges.filter(x=>x.id!==e.id);releaseTransition(e.id);edgeFiles.delete(e.id);selected={type:'node',id:e.from};saveGraph();renderDev()});
  }
  const h2=document.createElement('h4');h2.textContent='Connections';side.append(h2);
  for(const e of graph.edges){const b=document.createElement('button');b.className='connection';b.textContent=node(e.from)?.name+' → '+node(e.to)?.name+' ['+e.cells.join(',')+']';b.onclick=()=>{selected={type:'edge',id:e.id};renderDev()};side.append(b)}
@@ -141,7 +140,7 @@ document.querySelector('#closeDev').onclick=()=>dev.hidden=true;
 document.querySelector('#newNode').onclick=()=>{const id='n'+Date.now();graph.nodes.push({id,name:'Environment '+(graph.nodes.length+1),cols:9,rows:5,x:120+graph.nodes.length*55,y:110+graph.nodes.length*65});selected={type:'node',id};saveGraph();renderDev()};
 document.querySelector('#newEdge').onclick=()=>{if(graph.nodes.length<2){notify('Create a second environment first');return}const from=selected.type==='node'?selected.id:graph.nodes[0].id,to=graph.nodes.find(n=>n.id!==from).id,id='e'+Date.now();graph.edges.push({id,name:'Transition '+(graph.edges.length+1),from,to,cells:[],fps:24});selected={type:'edge',id};saveGraph();renderDev()};
 document.querySelector('#exportDev').onclick=()=>{const url=URL.createObjectURL(new Blob([JSON.stringify({version:3,...graph},null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='studio-tour-graph.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);notify('JSON exported; images must be reselected after reload')};
-document.querySelector('#importDev').onchange=async ev=>{try{const f=ev.target.files[0];if(!f)return;graph=validateGraph(JSON.parse(await f.text()));nodeFiles.clear();edgeFiles.clear();selected={type:'node',id:graph.nodes[0].id};saveGraph();switchScene(graph.start||graph.nodes[0].id);renderDev();notify('Graph imported; re-upload image sets')}catch(e){notify(e.message)}ev.target.value=''};
+document.querySelector('#importDev').onchange=async ev=>{try{const f=ev.target.files[0];if(!f)return;graph=validateGraph(JSON.parse(await f.text()));nodeFiles.clear();for(const id of [...transitionCache.keys()])releaseTransition(id);edgeFiles.clear();selected={type:'node',id:graph.nodes[0].id};saveGraph();switchScene(graph.start||graph.nodes[0].id);renderDev();notify('Graph imported; re-upload image sets')}catch(e){notify(e.message)}ev.target.value=''};
 
 const frameGridPanel=document.querySelector('#frameGridPanel'),frameGrid=document.querySelector('#frameGrid'),frameGridToggle=document.querySelector('#frameGridToggle');
 function updateGridSelection(){const active=manualFrame!==null?manualFrame:index(Math.max(0,Math.min(COLS-1,Math.round(x*(COLS-1)))),Math.max(0,Math.min(ROWS-1,Math.round(y*(ROWS-1)))));for(const b of frameGrid.children)b.classList.toggle('active',Number(b.dataset.frame)===active);const help=document.querySelector('#frameGridHelp');if(help)help.textContent=manualFrame!==null?'Frame '+(manualFrame+1)+' locked · click another cell · hide grid to resume':'Live frame '+(active+1)+' · click a cell to lock it'}
